@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/qiancijun/minirpc/codec"
+	"github.com/qiancijun/minirpc/common"
 	"github.com/qiancijun/minirpc/server"
 )
 
@@ -24,17 +25,17 @@ func startServer(addr chan string) {
 func main() {
 	addr := make(chan string)
 	go startServer(addr)
-	conn, _ := net.Dial("tcp", <- addr)
+	conn, _ := net.Dial("tcp", <-addr)
 	defer func() { _ = conn.Close() }()
-	
+
 	time.Sleep(time.Second)
 
-	_ = json.NewEncoder(conn).Encode(server.DefaultOption)
+	_ = json.NewEncoder(conn).Encode(common.DefaultOption)
 	cc := codec.NewGobCodec(conn)
 	for i := 0; i < 5; i++ {
 		h := &codec.Header{
 			ServiceMethod: "Foo.Sum",
-			Seq: uint64(i),
+			Seq:           uint64(i),
 		}
 		_ = cc.Write(h, fmt.Sprintf("miniRpc req %d", h.Seq))
 		_ = cc.ReadHeader(h)

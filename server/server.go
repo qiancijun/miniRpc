@@ -47,13 +47,13 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 	}
 
 	if opt.MagicNumber != common.MagicNumber {
-		log.Println("rpc server: invalid magic number %x", opt.MagicNumber)
+		log.Printf("rpc server: invalid magic number %x", opt.MagicNumber)
 		return
 	}
 
 	f := codec.NewCodecFuncMap[opt.CodecType]
 	if f == nil {
-		log.Printf("rpc server: invalid codec type %s\n", opt.CodecType)
+		log.Printf("rpc server: invalid codec type %s", opt.CodecType)
 		return
 	}
 	s.serveCodec(f(conn))

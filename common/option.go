@@ -1,8 +1,6 @@
-package server
+package common
 
 import (
-	"reflect"
-
 	"github.com/qiancijun/minirpc/codec"
 )
 
@@ -16,9 +14,4 @@ type Option struct {
 var DefaultOption = &Option{
 	MagicNumber: MagicNumber,
 	CodecType:   codec.GobType,
-}
-
-type request struct {
-	h            *codec.Header
-	argv, replyv reflect.Value
 }

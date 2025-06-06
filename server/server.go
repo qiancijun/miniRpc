@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/qiancijun/minirpc/codec"
+	"github.com/qiancijun/minirpc/common"
 )
 
 type Server struct{}
@@ -39,20 +40,20 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 		_ = conn.Close()
 	}()
 
-	var opt Option
+	var opt common.Option
 	if err := json.NewDecoder(conn).Decode(&opt); err != nil {
 		log.Println("rpc server: options error: ", err)
 		return
 	}
 
-	if opt.MagicNumber != MagicNumber {
-		log.Println("rpc server: invalid magic number %x", opt.MagicNumber)
+	if opt.MagicNumber != common.MagicNumber {
+		log.Printf("rpc server: invalid magic number %x", opt.MagicNumber)
 		return
 	}
 
 	f := codec.NewCodecFuncMap[opt.CodecType]
 	if f == nil {
-		log.Printf("rpc server: invalid codec type %s\n", opt.CodecType)
+		log.Printf("rpc server: invalid codec type %s", opt.CodecType)
 		return
 	}
 	s.serveCodec(f(conn))

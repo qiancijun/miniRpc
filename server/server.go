@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/qiancijun/minirpc/codec"
 	"github.com/qiancijun/minirpc/common"
@@ -19,8 +20,15 @@ type Server struct {
 	serviceMap sync.Map
 }
 
+type ServerOption struct {
+	Timeout time.Duration
+}
+
 var (
-	DefaultServer  = NewServer()
+	DefaultServer       = NewServer()
+	DefaultServerOption = ServerOption{
+		Timeout: 10 * time.Second,
+	}
 	invalidRequest = struct{}{}
 )
 
@@ -28,18 +36,18 @@ func NewServer() *Server {
 	return &Server{}
 }
 
-func (s *Server) Accept(lis net.Listener) {
+func (s *Server) Accept(lis net.Listener, opts ServerOption) {
 	for {
 		conn, err := lis.Accept()
 		if err != nil {
 			log.Println("rpc server: accept error: ", err)
 			return
 		}
-		go s.ServeConn(conn)
+		go s.ServeConn(conn, opts)
 	}
 }
 
-func (s *Server) ServeConn(conn io.ReadWriteCloser) {
+func (s *Server) ServeConn(conn io.ReadWriteCloser, opts ServerOption) {
 	defer func() {
 		_ = conn.Close()
 	}()
@@ -60,7 +68,7 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 		log.Printf("rpc server: invalid codec type %s", opt.CodecType)
 		return
 	}
-	s.serveCodec(f(conn))
+	s.serveCodec(f(conn), opts.Timeout)
 }
 
 func (s *Server) Register(rcvr interface{}) error {
@@ -71,7 +79,7 @@ func (s *Server) Register(rcvr interface{}) error {
 	return nil
 }
 
-func (s *Server) serveCodec(cc codec.Codec) {
+func (s *Server) serveCodec(cc codec.Codec, timeout time.Duration) {
 	sending := new(sync.Mutex)
 	wg := new(sync.WaitGroup)
 	for {
@@ -85,7 +93,7 @@ func (s *Server) serveCodec(cc codec.Codec) {
 			continue
 		}
 		wg.Add(1)
-		go s.handleRequest(cc, req, sending, wg)
+		go s.handleRequest(cc, req, sending, wg, timeout)
 	}
 	wg.Add(1)
 	_ = cc.Close()
@@ -128,15 +136,47 @@ func (s *Server) sendResponse(cc codec.Codec, h *codec.Header, body interface{},
 	}
 }
 
-func (s *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+func (s *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
 	defer wg.Done()
-	err := req.svc.Call(req.mtype, req.argv, req.replyv)
-	if err != nil {
-		req.h.Error = err.Error()
-		s.sendResponse(cc, req.h, invalidRequest, sending)
+
+	finish := make(chan struct{})
+	defer close(finish)
+	called := make(chan struct{})
+	sent := make(chan struct{})
+
+	go func() {
+		err := req.svc.Call(req.mtype, req.argv, req.replyv)
+		select {
+		case <-finish:
+			close(called)
+			close(sent)
+			return
+		case called <- struct{}{}:
+			if err != nil {
+				req.h.Error = err.Error()
+				s.sendResponse(cc, req.h, invalidRequest, sending)
+				sent <- struct{}{}
+				return
+			}
+			s.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+			sent <- struct{}{}
+		}
+	}()
+
+	if timeout == 0 {
+		<-called
+		<-sent
 		return
 	}
-	s.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+
+	select {
+	case <-time.After(timeout):
+		req.h.Error = errs.ErrServiceHandleTimeout.Error()
+		s.sendResponse(cc, req.h, invalidRequest, sending)
+		finish <- struct{}{}
+	case <-called:
+		<-sent
+	}
 }
 
 func (s *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
@@ -168,8 +208,8 @@ func (s *Server) findService(serviceMethod string) (*service.Service, *service.M
 	return svc, mtype, nil
 }
 
-func Accept(lis net.Listener) {
-	DefaultServer.Accept(lis)
+func Accept(lis net.Listener, opts ServerOption) {
+	DefaultServer.Accept(lis, opts)
 }
 
 func Register(rcvr interface{}) error {

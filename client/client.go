@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/qiancijun/minirpc/codec"
 	"github.com/qiancijun/minirpc/common"
@@ -25,6 +27,13 @@ type Client struct {
 	closing  bool
 	shutdown bool
 }
+
+type clientResult struct {
+	client *Client
+	err    error
+}
+
+type newClientFunc func(conn net.Conn, opt *common.Option) (client *Client, err error)
 
 func NewClient(conn net.Conn, opt *common.Option) (*Client, error) {
 	f := codec.NewCodecFuncMap[opt.CodecType]
@@ -44,21 +53,25 @@ func NewClient(conn net.Conn, opt *common.Option) (*Client, error) {
 	return newClientCodec(f(conn), opt), nil
 }
 
-func Dial(network, address string, opts ...*common.Option) (client *Client, err error) {
-	opt, err := parseOptions(opts...)
-	if err != nil {
-		return nil, err
-	}
-	conn, err := net.Dial(network, address)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if client == nil {
-			_ = conn.Close()
-		}
-	}()
-	return NewClient(conn, opt)
+// func Dial(network, address string, opts ...*common.Option) (client *Client, err error) {
+// 	opt, err := parseOptions(opts...)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	conn, err := net.Dial(network, address)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer func() {
+// 		if client == nil {
+// 			_ = conn.Close()
+// 		}
+// 	}()
+// 	return NewClient(conn, opt)
+// }
+
+func Dial(network, address string, opts ...*common.Option) (*Client, error) {
+	return dialTimeout(NewClient, network, address, opts...)
 }
 
 func newClientCodec(cc codec.Codec, opt *common.Option) *Client {
@@ -70,6 +83,42 @@ func newClientCodec(cc codec.Codec, opt *common.Option) *Client {
 	}
 	go client.receive()
 	return client
+}
+
+func dialTimeout(f newClientFunc, network, address string, opts ...*common.Option) (client *Client, err error) {
+	opt, err := parseOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialTimeout(network, address, opt.ConnectTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if err != nil {
+			_ = conn.Close()
+		}
+	}()
+
+	ch := make(chan clientResult)
+	go func() {
+		client, err := f(conn, opt)
+		ch <- clientResult{
+			client: client,
+			err:    err,
+		}
+	}()
+	if opt.ConnectTimeout == 0 {
+		result := <-ch
+		return result.client, result.err
+	}
+	select {
+	case <-time.After(opt.ConnectTimeout):
+		return nil, errs.ErrClientConnectTimeout
+	case result := <-ch:
+		return result.client, result.err
+	}
 }
 
 func parseOptions(opts ...*common.Option) (*common.Option, error) {
@@ -131,7 +180,7 @@ func (c *Client) receive() {
 		case call == nil:
 			err = c.cc.ReadBody(nil)
 		case h.Error != "":
-			call.Error = fmt.Errorf(h.Error)
+			call.Error = fmt.Errorf("%s", h.Error)
 			err = c.cc.ReadBody(nil)
 			call.done()
 		default:
@@ -189,9 +238,17 @@ func (c *Client) Go(serviceMethod string, args, reply interface{}, done chan *Ca
 	return call
 }
 
-func (c *Client) Call(serviceMethod string, args, reply interface{}) error {
-	call := <-c.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
-	return call.Error
+func (c *Client) Call(ctx context.Context, serviceMethod string, args, reply interface{}) error {
+	// call := <-c.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
+	call := c.Go(serviceMethod, args, reply, make(chan *Call, 1))
+	select {
+	case <- ctx.Done():
+		// 调用超时
+		c.removeCall(call.Seq)
+		return errs.ErrClientCallTimeout
+	case call := <- call.Done:
+		return call.Error
+	}
 }
 
 // Close implements io.Closer.

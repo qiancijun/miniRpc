@@ -2,18 +2,22 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/qiancijun/minirpc/codec"
 	"github.com/qiancijun/minirpc/common"
+	"github.com/qiancijun/minirpc/errs"
+	"github.com/qiancijun/minirpc/service"
 )
 
-type Server struct{}
+type Server struct {
+	serviceMap sync.Map
+}
 
 var (
 	DefaultServer  = NewServer()
@@ -59,6 +63,14 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 	s.serveCodec(f(conn))
 }
 
+func (s *Server) Register(rcvr interface{}) error {
+	svc := service.NewService(rcvr)
+	if _, dup := s.serviceMap.LoadOrStore(svc.Name, svc); dup {
+		return errs.ErrServiceAlreadyDefined
+	}
+	return nil
+}
+
 func (s *Server) serveCodec(cc codec.Codec) {
 	sending := new(sync.Mutex)
 	wg := new(sync.WaitGroup)
@@ -89,10 +101,21 @@ func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 		h: h,
 	}
 
-	// TODO: 还不知道参数的数据类型，假设都是 string
-	req.argv = reflect.New(reflect.TypeOf(""))
-	if err := cc.ReadBody(req.argv.Interface()); err != nil {
+	req.svc, req.mtype, err = s.findService(h.ServiceMethod)
+	if err != nil {
+		return req, err
+	}
+	req.argv = req.mtype.NewArgv()
+	req.replyv = req.mtype.NewReplyv()
+
+	argvi := req.argv.Interface()
+	if req.argv.Type().Kind() != reflect.Ptr {
+		argvi = req.argv.Addr().Interface()
+	}
+
+	if err := cc.ReadBody(argvi); err != nil {
 		log.Println("rpc server: read argv err: ", err)
+		return req, err
 	}
 	return req, nil
 }
@@ -106,10 +129,13 @@ func (s *Server) sendResponse(cc codec.Codec, h *codec.Header, body interface{},
 }
 
 func (s *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
-	// TODO: 目前还没有注册的方法，就先回一个 hello 出去
 	defer wg.Done()
-	log.Println(req.h, req.argv.Elem())
-	req.replyv = reflect.ValueOf(fmt.Sprintf("Hello! miniRpc resp %d", req.h.Seq))
+	err := req.svc.Call(req.mtype, req.argv, req.replyv)
+	if err != nil {
+		req.h.Error = err.Error()
+		s.sendResponse(cc, req.h, invalidRequest, sending)
+		return
+	}
 	s.sendResponse(cc, req.h, req.replyv.Interface(), sending)
 }
 
@@ -124,6 +150,28 @@ func (s *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
 	return &h, nil
 }
 
+func (s *Server) findService(serviceMethod string) (*service.Service, *service.MethodType, error) {
+	dot := strings.LastIndex(serviceMethod, ".")
+	if dot < 0 {
+		return nil, nil, errs.ErrServiceIllFormed
+	}
+	serviceName, methodName := serviceMethod[:dot], serviceMethod[dot+1:]
+	svci, ok := s.serviceMap.Load(serviceName)
+	if !ok {
+		return nil, nil, errs.ErrServiceNotFound
+	}
+	svc := svci.(*service.Service)
+	mtype := svc.Method[methodName]
+	if mtype == nil {
+		return nil, nil, errs.ErrServiceNotFound
+	}
+	return svc, mtype, nil
+}
+
 func Accept(lis net.Listener) {
 	DefaultServer.Accept(lis)
+}
+
+func Register(rcvr interface{}) error {
+	return DefaultServer.Register(rcvr)
 }

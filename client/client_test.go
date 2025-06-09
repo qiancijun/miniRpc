@@ -3,6 +3,9 @@ package client
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -73,4 +76,32 @@ func TestClient_Call(t *testing.T) {
 		assert.NotNil(t, err)
 		assert.Equal(t, errs.ErrServiceHandleTimeout.Error(), err.Error())
 	})
+}
+
+func TestXDial(t *testing.T) {
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" { // darwin 是 macOS 的系统标识
+		ch := make(chan struct{})
+
+		// macOS 通常使用 /var/tmp 而不是 /tmp，但 /tmp 也可以工作
+		// 更好的做法是使用 os.TempDir() 获取临时目录
+		tempDir := os.TempDir()
+		addr := filepath.Join(tempDir, "geerpc.sock")
+
+		go func() {
+			_ = os.Remove(addr)
+			l, err := net.Listen("unix", addr)
+			if err != nil {
+				t.Fatal("failed to listen unix socket")
+			}
+			ch <- struct{}{}
+			server.Accept(l, server.DefaultServerOption)
+		}()
+
+		<-ch
+		_, err := XDial("unix@" + addr)
+		assert.NoError(t, err)
+
+		// 测试完成后清理
+		_ = os.Remove(addr)
+	}
 }

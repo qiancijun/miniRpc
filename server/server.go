@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -34,6 +35,30 @@ var (
 
 func NewServer() *Server {
 	return &Server{}
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "CONNECT" {
+		w.Header().Set("Content-Type", "text/pain; charset=utf-8")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_, _ = io.WriteString(w, "405  must CONNECT\n")
+		return
+	}
+
+	conn, _, err := w.(http.Hijacker).Hijack()
+
+	if err != nil {
+		log.Print("rpc hijacking ", r.RemoteAddr, ": ", err.Error())
+		return
+	}
+	_, _ = io.WriteString(conn, "HTTP/1.0 "+common.Connected+"\n\n")
+	s.ServeConn(conn, DefaultServerOption)
+}
+
+func (s *Server) HandleHTTP() {
+	http.Handle(common.DefaultRPCPath, s)
+	http.Handle(common.DefaultDebugPath, DebugHTTP{s})
+	log.Println("rpc server debug path: ", common.DefaultDebugPath)
 }
 
 func (s *Server) Accept(lis net.Listener, opts ServerOption) {
@@ -214,4 +239,8 @@ func Accept(lis net.Listener, opts ServerOption) {
 
 func Register(rcvr interface{}) error {
 	return DefaultServer.Register(rcvr)
+}
+
+func HandleHTTP() {
+	DefaultServer.HandleHTTP()
 }

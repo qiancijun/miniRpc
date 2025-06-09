@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +56,22 @@ func NewClient(conn net.Conn, opt *common.Option) (*Client, error) {
 	return newClientCodec(f(conn), opt), nil
 }
 
+func NewHTTPClient(conn net.Conn, opt *common.Option) (*Client, error) {
+	_, _ = io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", common.DefaultRPCPath))
+
+	resq, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{
+		Method: "CONNECT",
+	})
+	if err != nil || resq.Status != common.Connected {
+		return nil, errs.ErrUnexpextedHTTPResponse
+	}
+	cli, err := NewClient(conn, opt)
+	if err != nil {
+		return nil, err
+	}
+	return cli, nil
+}
+
 // func Dial(network, address string, opts ...*common.Option) (client *Client, err error) {
 // 	opt, err := parseOptions(opts...)
 // 	if err != nil {
@@ -72,6 +91,24 @@ func NewClient(conn net.Conn, opt *common.Option) (*Client, error) {
 
 func Dial(network, address string, opts ...*common.Option) (*Client, error) {
 	return dialTimeout(NewClient, network, address, opts...)
+}
+
+func DialHTTP(network, address string, opts ...*common.Option) (*Client, error) {
+	return dialTimeout(NewHTTPClient, network, address, opts...)
+}
+
+func XDial(rpcAddr string, opts ...*common.Option) (*Client, error) {
+	parts := strings.Split(rpcAddr, "@")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("rpc client err; wrong format '%s', expect protocal@addr", rpcAddr)
+	}
+	protocol, addr := parts[0], parts[1]
+	switch protocol {
+	case "http":
+		return DialHTTP("tcp", addr, opts...)
+	default:
+		return Dial(protocol, addr, opts...)
+	}
 }
 
 func newClientCodec(cc codec.Codec, opt *common.Option) *Client {
@@ -242,11 +279,11 @@ func (c *Client) Call(ctx context.Context, serviceMethod string, args, reply int
 	// call := <-c.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
 	call := c.Go(serviceMethod, args, reply, make(chan *Call, 1))
 	select {
-	case <- ctx.Done():
+	case <-ctx.Done():
 		// 调用超时
 		c.removeCall(call.Seq)
 		return errs.ErrClientCallTimeout
-	case call := <- call.Done:
+	case call := <-call.Done:
 		return call.Error
 	}
 }

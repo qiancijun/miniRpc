@@ -166,6 +166,7 @@ func parseOptions(opts ...*common.Option) (*common.Option, error) {
 		return nil, errs.ErrOptionsEmpty
 	}
 	opt := opts[0]
+	log.Println(opt)
 	opt.MagicNumber = common.DefaultOption.MagicNumber
 	if opt.CodecType == "" {
 		opt.CodecType = common.DefaultOption.CodecType

@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qiancijun/minirpc/client"
 	"github.com/qiancijun/minirpc/server"
 	"github.com/qiancijun/minirpc/xclient"
 )
@@ -33,7 +32,7 @@ func startServer(addrCh chan string) {
 	s := server.NewServer()
 	_ = s.Register(&foo)
 	addrCh <- l.Addr().String()
-	server.Accept(l, server.DefaultServerOption)
+	s.Accept(l, server.DefaultServerOption)
 }
 
 func foo(xc *xclient.XClient, ctx context.Context, typ, serviceMethod string, args *Args) {
@@ -53,26 +52,22 @@ func foo(xc *xclient.XClient, ctx context.Context, typ, serviceMethod string, ar
 }
 
 func call(addr1, addr2 string) {
-	// d := xclient.NewMultiServersDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
-	// xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
-	// defer func() { _ = xc.Close() }()
-	cli, _ := client.Dial("tcp", addr1)
-	defer cli.Close()
-	var reply int
-	cli.Call(context.Background(), "Foo.Sum", &Args{Num1: 1, Num2: 2 * 2}, reply)
+	d := xclient.NewMultiServersDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
+	defer func() { _ = xc.Close() }()
 	// send request & receive response
-	// foo(xc, context.Background(), "call", "Foo.Sum", &Args{Num1: 1, Num2: 2 * 2})
-	// var wg sync.WaitGroup
-	// for i := 0; i < 5; i++ {
-	// 	wg.Add(1)
-	// 	go func(i int) {
-	// 		defer wg.Done()
-	// 		foo(xc, context.Background(), "call", "Foo.Sum", &Args{Num1: i, Num2: i * i})
-	// 	}(i)
-	// }
-	// wg.Wait()
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			foo(xc, context.Background(), "call", "Foo.Sum", &Args{Num1: i, Num2: i * i})
+		}(i)
+	}
+	wg.Wait()
 }
 
+// TODO: bug
 func broadcast(addr1, addr2 string) {
 	d := xclient.NewMultiServersDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
 	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
@@ -94,15 +89,15 @@ func broadcast(addr1, addr2 string) {
 func main() {
 	log.SetFlags(0)
 	ch1 := make(chan string)
-	// ch2 := make(chan string)
+	ch2 := make(chan string)
 	// start two servers
 	go startServer(ch1)
-	// go startServer(ch2)
+	go startServer(ch2)
 
 	addr1 := <-ch1
-	// addr2 := <-ch2
+	addr2 := <-ch2
 
 	time.Sleep(time.Second)
-	call(addr1, "")
-	// broadcast(addr1, addr2)
+	call(addr1, addr2)
+	broadcast(addr1, addr2)
 }

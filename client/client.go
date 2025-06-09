@@ -166,6 +166,7 @@ func parseOptions(opts ...*common.Option) (*common.Option, error) {
 		return nil, errs.ErrOptionsEmpty
 	}
 	opt := opts[0]
+	log.Println(opt)
 	opt.MagicNumber = common.DefaultOption.MagicNumber
 	if opt.CodecType == "" {
 		opt.CodecType = common.DefaultOption.CodecType
@@ -248,7 +249,7 @@ func (c *Client) send(call *Call) {
 	c.header.ServiceMethod = call.ServiceMethod
 	c.header.Seq = seq
 	c.header.Error = ""
-
+	// log.Println(c.header)
 	// 发送请求
 	if err := c.cc.Write(&c.header, call.Args); err != nil {
 		call := c.removeCall(seq)
